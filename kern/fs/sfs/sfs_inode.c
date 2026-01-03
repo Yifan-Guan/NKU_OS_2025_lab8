@@ -555,60 +555,93 @@ sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset
     assert(din->type != SFS_TYPE_DIR);
     off_t endpos = offset + *alenp, blkoff;
     *alenp = 0;
-	// calculate the Rd/Wr end position
     if (offset < 0 || offset >= SFS_MAX_FILE_SIZE || offset > endpos) {
         return -E_INVAL;
     }
     if (offset == endpos) {
         return 0;
     }
-    if (endpos > SFS_MAX_FILE_SIZE) {
-        endpos = SFS_MAX_FILE_SIZE;
-    }
     if (!write) {
         if (offset >= din->size) {
-            return 0;
+             return 0;
         }
         if (endpos > din->size) {
             endpos = din->size;
         }
+    } else {
+        if (endpos > SFS_MAX_FILE_SIZE) {
+            endpos = SFS_MAX_FILE_SIZE;
+        }
     }
-
-    int (*sfs_buf_op)(struct sfs_fs *sfs, void *buf, size_t len, uint32_t blkno, off_t offset);
-    int (*sfs_block_op)(struct sfs_fs *sfs, void *buf, uint32_t blkno, uint32_t nblks);
-    if (write) {
-        sfs_buf_op = sfs_wbuf, sfs_block_op = sfs_wblock;
+    if ((blkoff = offset % SFS_BLKSIZE) != 0) {
+        size_t alen = min(SFS_BLKSIZE - blkoff, endpos - offset);
+        uint32_t ino;
+        uint32_t blkno = offset / SFS_BLKSIZE;
+        int ret;
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, write, &ino)) != 0) {
+            return ret;
+        }
+        if ((ret = (write) ?
+                sfs_wbuf(sfs, buf, alen, ino, blkoff) :
+                (ino != 0 ? sfs_rbuf(sfs, buf, alen, ino, blkoff) : 0)) != 0) {
+            return ret;
+        }
+        if (!write && ino == 0) {
+            memset(buf, 0, alen);
+        }
+        *alenp += alen;
+        if ((offset += alen) >= endpos) {
+            goto out;
+        }
+        buf += alen;
     }
-    else {
-        sfs_buf_op = sfs_rbuf, sfs_block_op = sfs_rblock;
+    while (offset + SFS_BLKSIZE <= endpos) {
+        uint32_t blkno = offset / SFS_BLKSIZE;
+        uint32_t ino;
+        int ret;
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, write, &ino)) != 0) {
+            return ret;
+        }
+        if ((ret = (write) ?
+                sfs_wblock(sfs, buf, ino, 1) :
+                (ino != 0 ? sfs_rblock(sfs, buf, ino, 1) : 0)) != 0) {
+            return ret;
+        }
+        if (!write && ino == 0) {
+            memset(buf, 0, SFS_BLKSIZE);
+        }
+        *alenp += SFS_BLKSIZE;
+        if ((offset += SFS_BLKSIZE) >= endpos) {
+            goto out;
+        }
+        buf += SFS_BLKSIZE;
     }
-
-    int ret = 0;
-    size_t size, alen = 0;
-    uint32_t ino;
-    uint32_t blkno = offset / SFS_BLKSIZE;          // The NO. of Rd/Wr begin block
-    uint32_t nblks = endpos / SFS_BLKSIZE - blkno;  // The size of Rd/Wr blocks
-
-  //LAB8:EXERCISE1 YOUR CODE HINT: call sfs_bmap_load_nolock, sfs_rbuf, sfs_rblock,etc. read different kind of blocks in file
-	/*
-	 * (1) If offset isn't aligned with the first block, Rd/Wr some content from offset to the end of the first block
-	 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_buf_op
-	 *               Rd/Wr size = (nblks != 0) ? (SFS_BLKSIZE - blkoff) : (endpos - offset)
-	 * (2) Rd/Wr aligned blocks 
-	 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_block_op
-     * (3) If end position isn't aligned with the last block, Rd/Wr some content from begin to the (endpos % SFS_BLKSIZE) of the last block
-	 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_buf_op	
-	*/
-
-    
-
+    if ((blkoff = endpos % SFS_BLKSIZE) != 0) {
+        size_t alen = blkoff;
+        uint32_t blkno = offset / SFS_BLKSIZE;
+        uint32_t ino;
+        int ret;
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, write, &ino)) != 0) {
+            return ret;
+        }
+        if ((ret = (write) ?
+                sfs_wbuf(sfs, buf, alen, ino, 0) :
+                (ino != 0 ? sfs_rbuf(sfs, buf, alen, ino, 0) : 0)) != 0) {
+            return ret;
+        }
+        if (!write && ino == 0) {
+            memset(buf, 0, alen);
+        }
+        *alenp += alen;
+    }
 out:
-    *alenp = alen;
-    if (offset + alen > sin->din->size) {
-        sin->din->size = offset + alen;
-        sin->dirty = 1;
+    if (write) {
+        if (offset > din->size) {
+            din->size = offset;
+            sin->dirty = 1;
+        }
     }
-    return ret;
+    return 0;
 }
 
 /*
