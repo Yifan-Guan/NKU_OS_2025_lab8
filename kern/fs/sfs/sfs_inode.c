@@ -13,6 +13,10 @@
 #include <error.h>
 #include <assert.h>
 
+#ifndef min
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#endif
+
 static const struct inode_ops sfs_node_dirops;  // dir operations
 static const struct inode_ops sfs_node_fileops; // file operations
 
@@ -578,7 +582,7 @@ sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset
         uint32_t ino;
         uint32_t blkno = offset / SFS_BLKSIZE;
         int ret;
-        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, write, &ino)) != 0) {
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0) {
             return ret;
         }
         if ((ret = (write) ?
@@ -599,7 +603,7 @@ sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset
         uint32_t blkno = offset / SFS_BLKSIZE;
         uint32_t ino;
         int ret;
-        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, write, &ino)) != 0) {
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0) {
             return ret;
         }
         if ((ret = (write) ?
@@ -621,7 +625,7 @@ sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset
         uint32_t blkno = offset / SFS_BLKSIZE;
         uint32_t ino;
         int ret;
-        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, write, &ino)) != 0) {
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0) {
             return ret;
         }
         if ((ret = (write) ?
