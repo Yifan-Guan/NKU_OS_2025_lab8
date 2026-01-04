@@ -1,25 +1,21 @@
-# ucore Lab8 实验报告
+<h1 align="center" style="font-size: 44px"> 实验八：文件系统 </h1>
 
-**课程**：操作系统原理与设计  
-**实验名称**：实验8 文件系统  
-**姓名**：  
-**学号**：
-**实验日期**：2026年1月3日  
-**实验环境**：ucore（基于实验2~7完成）  
+**小组成员：**
 
-## 实验目标
+- 管一凡：2312307
+- 周雨晴：2312313
+- 欧一凡：2312826
 
-1. 理解 ucore 中文件系统（SFS）的整体架构与实现原理
-2. 完成简单文件系统（SFS）的读操作核心代码实现
-3. 实现基于文件系统的用户程序加载与执行机制
-4. 理解 UNIX 经典机制（管道、硬链接/软链接）的设计思路，并给出概要设计方案
+**Github仓库地址：**https://github.com/Yifan-Guan/NKU_OS_2025_lab8.git
 
-## 练习1：完成读文件操作的实现
+# 练习1: 完成读文件操作的实现
 
-### 实现位置
+## 实现位置
+
 `kern/fs/sfs/sfs_inode.c` 中的 `sfs_io_nolock()` 函数
 
-### 设计思路
+## 设计思路
+
 `sfs_io_nolock()` 是 SFS 文件系统读写操作的核心底层函数，负责处理任意偏移、任意长度的读/写请求。  
 主要处理逻辑分为三段：
 
@@ -28,13 +24,14 @@
 3. **尾部非整块**（最后剩余不足一块的字节）
 
 关键处理：
+
 - 使用 `sfs_bmap_load_nolock()` 将文件逻辑块号映射为磁盘物理块号
 - 读操作：块未分配（ino==0）时返回全零填充
 - 写操作：自动分配新块，并更新文件大小 `din->size`
 - 写操作后标记 inode dirty 标志
 - 函数在不持有 inode 锁的情况下完成（上层已加锁保护）
 
-### 实现代码
+## 实现代码
 
 ```c
 static int
@@ -158,81 +155,199 @@ out:
 }
 ```
 
-## 练习2：完成基于文件系统的执行程序机制的实现
 
-### 实现位置
-`kern/process/proc.c` 中的 `load_icode()` 函数（主要改写部分）
 
-### 设计思路
+# 练习2: 完成基于文件系统的执行程序机制的实现
 
-- **原版**：从内存加载二进制程序
-- **本实验**：改为从文件系统读取 ELF 可执行文件
-- **主要流程**：
-    1. 使用 `vfs_open()` 打开可执行文件
-    2. 读取并校验 ELF 头部
-    3. 遍历 Program Header，加载 PT_LOAD 段到用户虚拟地址空间
-    4. 建立对应 vma 映射
-    5. 将文件内容读入虚拟内存
-    6. 设置用户栈、参数、入口点、当前工作目录等
+## 基于文件系统的执行程序机制
 
-### 实现代码（核心片段）
+在 Lab8 之前的实验中，用户程序是直接链接到内核镜像中的，内核通过内存地址直接访问程序的二进制数据。而在 Lab8 中，用户程序存储在**文件系统**中，内核需要通过文件系统接口读取可执行文件，然后加载到内存中执行。
 
-```c
-// 打开可执行文件
-int ret = -E_NO_MEM;
-struct file *file = NULL;
-if ((ret = vfs_open(name, &file)) != 0) {
-    goto bad_file;
-}
+### 执行流程
 
-// 读取ELF头部
-struct elfhdr elf;
-memset(&elf, 0, sizeof(elf));
-size_t alen = sizeof(elf);
-if ((ret = vop_read(file->node, &elf, alen, 0, &alen)) != 0 || alen != sizeof(elf)) {
-    goto bad_elf;
-}
-// 验证ELF魔术数、架构等
-if (elf.e_magic != ELF_MAGIC) {
-    ret = -E_INVAL_ELF;
-    goto bad_elf;
-}
-
-// 遍历程序头表
-struct proghdr *ph = (struct proghdr *)((uintptr_t)elf.e_phoff);
-ret = -E_NO_MEM;
-for (int i = 0; i < elf.e_phnum; i ++, ph ++) {
-    if (ph->p_type == ELF_PT_LOAD) {
-        // 为当前段创建vma映射
-        uintptr_t start = ph->p_vaddr, end = ph->p_vaddr + ph->p_memsz;
-        uint32_t perm = PTE_U;
-        if (ph->p_flags & ELF_PF_X) perm |= PTE_X;
-        if (ph->p_flags & ELF_PF_W) perm |= PTE_W;
-        if (ph->p_flags & ELF_PF_R) perm |= PTE_R;
-        if ((ret = mm_map(mm, start, ph->p_memsz, perm, NULL)) != 0) {
-            goto bad_cleanup_mmap;
-        }
-        // 将文件内容读取到虚拟内存
-        alen = ph->p_filesz;
-        if ((ret = vop_read(file->node, (void *)start, alen, ph->p_offset, &alen)) != 0 || alen != ph->p_filesz) {
-            goto bad_cleanup_mmap;
-        }
-        // 对于.bss段，清空剩余内存
-        if (ph->p_filesz < ph->p_memsz) {
-            memset((void *)(start + ph->p_filesz), 0, ph->p_memsz - ph->p_filesz);
-        }
-    }
-}
+```
+用户调用 exec("hello")
+        │
+        ▼
+┌───────────────────────────────────────┐
+│  sys_exec 系统调用                     │
+│    → do_execve(name, argc, argv)      │
+└───────────────┬───────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────┐
+│  1. sysfile_open(path, O_RDONLY)      │
+│     通过VFS打开可执行文件，获取fd          │
+└───────────────┬───────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────┐
+│  2. 清理旧的内存空间                    │
+│     - exit_mmap(mm)                   │
+│     - put_pgdir(mm)                   │
+│     - mm_destroy(mm)                  │
+└───────────────┬───────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────┐
+│  3. load_icode(fd, argc, kargv)       │
+│     从文件加载新程序到内存                │
+└───────────────┬───────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────┐
+│  4. 通过 trapret 返回用户态              │
+│     开始执行新程序                       │
+└───────────────────────────────────────┘
 ```
 
-### 测试结果
-- `make qemu` 启动后成功进入 sh
-- 可正常执行 hello、exit、cat、ls 等用户程序
-- 程序从 SFS 文件系统正确加载并运行
+### 核心组件
 
-## 扩展练习 Challenge1：UNIX PIPE 机制设计方案
+#### 文件系统层次结构
 
-### 核心数据结构
+```
+┌─────────────────────────────────────────────────┐
+│                  用户程序                         │
+├─────────────────────────────────────────────────┤
+│              系统调用接口层                        │
+│         (sysfile_open/read/close)               │
+├─────────────────────────────────────────────────┤
+│            虚拟文件系统 (VFS)                     │
+│     统一的文件操作接口，屏蔽底层差异                  │
+├─────────────────────────────────────────────────┤
+│           Simple FS (SFS)                       │
+│        ucore 实现的简单文件系统                    │
+├─────────────────────────────────────────────────┤
+│              设备驱动层                           │
+│           (IDE/ramdisk)                         │
+└─────────────────────────────────────────────────┘
+```
+
+## 代码实现
+
+练习2的目标是实现基于文件系统的执行程序机制，主要修改 `kern/process/proc.c` 文件中的以下几个函数：
+
+1. `alloc_proc()` - 初始化文件结构指针
+2. `proc_run()` - 添加TLB刷新
+3. `do_fork()` - 复制文件描述符表
+4. `load_icode()` - 核心：从文件系统加载可执行程序
+
+### 1. alloc_proc 函数修改
+
+在进程控制块初始化时，添加对 `filesp` 字段的初始化。
+
+```c++
+proc->filesp = NULL;
+```
+
+`filesp` 是 Lab8 新增的进程结构体成员，指向进程的文件描述符表
+
+初始化为 `NULL`，后续在 `do_fork` 或 `proc_init` 中会分配实际的文件结构
+
+### 2. proc_run 函数修改
+
+在切换页表后、进行上下文切换前，添加TLB刷新操作。
+
+```c
+lsatp(current->pgdir);
+flush_tlb();  // LAB8: 刷新TLB，确保页表切换生效
+switch_to(&(prev->context), &(current->context));
+```
+
+- `lsatp()` 切换了页表基址寄存器（RISC-V的satp寄存器）
+- 但CPU的TLB（Translation Lookaside Buffer）中可能缓存了旧的页表项
+- `flush_tlb()` 清空TLB缓存，确保后续的地址转换使用新的页表
+
+### 3. do_fork 函数修改
+
+在复制内存映射后、复制线程上下文前，调用 `copy_files` 复制文件描述符表。
+
+```c#
+// 3. call copy_mm to dup OR share mm according clone_flag
+if (copy_mm(clone_flags, proc) != 0){
+    goto bad_fork_cleanup_kstack;
+}
+    
+// LAB8: call copy_files to dup OR share files according clone_flag
+if (copy_files(clone_flags, proc) != 0){
+    goto bad_fork_cleanup_kstack;
+}
+    
+// 4. call copy_thread to setup tf & context in proc_struct
+copy_thread(proc, stack, tf);
+```
+
+- `copy_files()` 根据 `clone_flags` 决定是共享还是复制父进程的文件描述符表
+- 如果 `clone_flags & CLONE_FS`，则共享文件描述符表（引用计数+1）
+- 否则，复制一份新的文件描述符表
+- 同时添加了中断保护，确保 `get_pid`、`hash_proc`、`set_links` 操作的原子性
+
+### 4. load_icode 函数实现（核心）
+
+从文件系统读取ELF可执行文件，加载到进程的内存空间中执行。
+
+```
+┌─────────────────────────────────────────┐
+│           load_icode(fd, argc, kargv)   │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│  (1) mm_create() 创建内存管理结构          │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│  (2) setup_pgdir() 创建页目录表           │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│  (3.1) 从文件读取ELF头，验证魔数            │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│  (3.2-3.5) 遍历程序段：                   │
+│    - 读取程序段头                         │
+│    - mm_map建立VMA映射                   │
+│    - pgdir_alloc_page分配物理页           │
+│    - load_icode_read从文件读取内容         │
+│    - BSS段清零                           │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│  (4) mm_map建立用户栈映射                  │
+│      预分配4个物理页                       │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│  (5) 设置current->mm, current->pgdir     │
+│      lsatp切换到新页表                    │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│  (6) 在用户栈设置argc/argv参数             │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│  (7) 设置trapframe：                     │
+│    - sp = 栈顶                           │
+│    - epc = 程序入口                       │
+│    - status = 用户态                     │
+│    - a0 = argc, a1 = argv               │
+└─────────────────────────────────────────┘
+```
+
+
+
+# Challenge1：完成基于“UNIX的PIPE机制”的设计方案
+
+## 核心数据结构
 
 ```c
 struct pipe {
@@ -250,7 +365,7 @@ struct pipe {
 };
 ```
 
-### 主要接口语义
+## 主要接口语义
 
 1. **`int pipe(int fd[2])`**  
    创建匿名管道，返回读/写端 fd
@@ -264,52 +379,74 @@ struct pipe {
 4. **`int close(int fd)`**  
    关闭一端；两端都关闭时释放 pipe 结构
 
-## 扩展练习 Challenge2：UNIX 软链接与硬链接机制设计方案
 
-### 核心数据结构扩展
+
+# Challenge2：完成基于“UNIX的软连接和硬连接机制”的设计方案
+
+UNIX 文件系统中的链接机制允许不同的文件名指向同一个文件实体。
+
+## 1. 硬连接 (Hard Link)
+
+**原理**： 硬链接是目录项与 inode 之间的直接映射。多个目录项可以指向同一个 inode 编号。当所有指向该 inode 的目录项都被删除，且该文件未被进程打开时，该 inode 及其数据块才会被释放。
+
+**数据结构设计 (Struct 定义)**： 需要在磁盘上的 inode 结构中增加一个引用计数器。
 
 ```c
-// 磁盘 inode 扩展
+/* 在 sfs_disk_inode 中增加 nlinks */
 struct sfs_disk_inode {
-    uint32_t size;
-    uint16_t type;                  // 新增 SFS_TYPE_SYMLINK
-    uint16_t nlinks;                // 硬链接计数
-    uint32_t blocks;
-    uint32_t direct[SFS_NDIRECT];
-    uint32_t indirect;
-    char symlink_target[256];       // 软链接目标路径（或变长设计）
-};
-
-// 内存 inode 扩展
-struct sfs_inode {
-    // ... 原有字段 ...
-    char *symlink_path;             // 缓存的目标路径（加速解析）
+    uint32_t size;              // 文件大小
+    uint16_t type;              // 文件类型
+    uint16_t nlinks;            // [新增] 硬链接计数：指向此 inode 的目录项数量
+    uint32_t blocks;            // 占用的块数
+    uint32_t direct[SFS_NDIRECT]; // 直接索引块
+    uint32_t indirect;          // 一级间接索引块
+    // ... 其他字段
 };
 ```
 
-### 主要接口语义
+**接口语义与操作**：
 
-1. **`int link(const char *old, const char *new)`**  
-   硬链接：目标 inode 的 nlinks++
+1. **link(oldpath, newpath)**:
+   - 查找 oldpath 对应的 inode。
+   - 在 newpath 的父目录中创建一个新的目录项 (dirent)，使其指向 oldpath 的 inode 编号。
+   - 将该 inode 的 nlinks 加 1。
+   - 回写 inode 到磁盘。
+2. **unlink(path)**:
+   - 查找 path 对应的 inode。
+   - 删除目录项。
+   - 将 inode 的 nlinks 减 1。
+   - 如果 nlinks == 0 且无进程打开，释放 inode 和数据块；否则仅更新 inode。
 
-2. **`int symlink(const char *target, const char *linkpath)`**  
-   软链接：type = SFS_TYPE_SYMLINK，记录目标路径
+## 2. 软连接 (Soft Link / Symbolic Link)
 
-3. **`int unlink(const char *pathname)`**  
-   删除链接：nlinks--，为0且非目录则释放数据块
+**原理**： 软链接是一个特殊类型的文件，其内容不是普通数据，而是指向另一个文件的**路径字符串**。
 
-4. **`ssize_t readlink(const char *path, char *buf, size_t bufsize)`**  
-   读取软链接目标路径
+**数据结构设计**： 利用现有的 sfs_disk_inode，通过 type 字段区分。
 
-### 同步互斥要点
-- 使用 `sfs->mutex_sem` 保护 nlinks 增减
-- 目录项修改（link/unlink/symlink）加锁
-- 删除文件时检查 nlinks==0 才释放 inode 和数据块
-- 软链接解析需防止循环链接（可记录深度或路径集合）
+```C
+/* 定义新的文件类型 */
+#define SFS_TYPE_LINK 2  // 符号链接类型
 
-## 实验总结与心得
+/* sfs_disk_inode 保持不变，但内容含义改变 */
+// 如果是 SFS_TYPE_LINK，其 direct[] 块或者直接在 inode 剩余空间中存储目标路径字符串。
+```
 
-1. **完成情况**：完成了 SFS 文件读操作的核心实现，支持稀疏文件和边界情况；实现了从文件系统加载 ELF 可执行文件的机制，shell 及用户程序正常运行；对 UNIX 管道、硬/软链接机制有了更深入的理解，并给出了可行的概要设计方案。
+**接口语义与操作**：
 
-2. **实验完成情况**：全部完成
+1. **symlink(target, linkpath)**:
+   - 创建一个新文件 linkpath，类型设为 SFS_TYPE_LINK。
+   - 将 target 字符串写入该文件的数据块中。
+2. **readlink(path, buf, size)**:
+   - 读取软链接文件的内容（即目标路径）到 buf 中。
+3. **open/lookup 流程修改**:
+   - 在解析路径时，如果遇到 SFS_TYPE_LINK 类型的文件：
+     - 读取其内容得到 target_path。
+     - 递归调用查找函数解析 target_path。
+     - **注意**：必须限制递归深度（如最多解析 5 次），以防止循环链接导致死循环。
 
+## 3. 同步互斥处理
+
+由于引入了链接，多个操作可能同时修改 inode 的 nlinks 或目录项。
+
+- **Inode 锁**：在修改 nlinks 时，必须持有该 inode 的锁（ucore 中通常是 sem 或 lock）。
+- **操作原子性**：link 和 unlink 操作涉及目录项修改和 inode 计数修改，应当在文件系统层面上保证逻辑原子性，防止出现目录项存在但 inode 计数错误的情况。
